@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
 # Create a Momence feature worktree: git worktree add, copy local env files, yarn.
-# Sourced or called with: create_worktree <repo-root> <branch> [dest] [--no-install] [--from <ref>]
-# Prints the destination path on the last success line to stdout via WT_CREATED_PATH.
+# Defines create_worktree <repo-root> <branch> [dest] [--no-install] [--from <ref>]
 
 set -euo pipefail
+
+_create_copy_if_exists() {
+  local root="$1" dest="$2" rel="$3"
+  local src="$root/$rel"
+  local dst="$dest/$rel"
+  if [[ -e "$src" ]]; then
+    mkdir -p "$(dirname "$dst")"
+    cp -R "$src" "$dst"
+    echo "copied $rel" >&2
+  fi
+}
 
 create_worktree() {
   local ROOT="$1"
@@ -72,28 +82,17 @@ create_worktree() {
     git -C "$ROOT" worktree add -b "$BRANCH" "$DEST" "$FROM_REF"
   fi
 
-  copy_if_exists() {
-    local rel="$1"
-    local src="$ROOT/$rel"
-    local dst="$DEST/$rel"
-    if [[ -e "$src" ]]; then
-      mkdir -p "$(dirname "$dst")"
-      cp -R "$src" "$dst"
-      echo "copied $rel" >&2
-    fi
-  }
-
-  copy_if_exists backend/.env
-  copy_if_exists backend/.env.local
-  copy_if_exists backend/.env.remote.local
-  copy_if_exists backend/.env.test
-  copy_if_exists frontend/.env
-  copy_if_exists frontend/.env.local
-  copy_if_exists frontend/.env.development.local
-  copy_if_exists static-server/.env
-  copy_if_exists e2e/.env
-  copy_if_exists dbhub.toml
-  copy_if_exists mprocs.yaml
+  _create_copy_if_exists "$ROOT" "$DEST" backend/.env
+  _create_copy_if_exists "$ROOT" "$DEST" backend/.env.local
+  _create_copy_if_exists "$ROOT" "$DEST" backend/.env.remote.local
+  _create_copy_if_exists "$ROOT" "$DEST" backend/.env.test
+  _create_copy_if_exists "$ROOT" "$DEST" frontend/.env
+  _create_copy_if_exists "$ROOT" "$DEST" frontend/.env.local
+  _create_copy_if_exists "$ROOT" "$DEST" frontend/.env.development.local
+  _create_copy_if_exists "$ROOT" "$DEST" static-server/.env
+  _create_copy_if_exists "$ROOT" "$DEST" e2e/.env
+  _create_copy_if_exists "$ROOT" "$DEST" dbhub.toml
+  _create_copy_if_exists "$ROOT" "$DEST" mprocs.yaml
 
   if [[ "$DO_INSTALL" -eq 1 ]]; then
     export YARN_ENABLE_GLOBAL_CACHE=true
@@ -111,6 +110,5 @@ create_worktree() {
 
   echo >&2
   echo "Worktree ready: $DEST" >&2
-  # Path for callers that want to capture it
   printf '%s\n' "$DEST"
 }

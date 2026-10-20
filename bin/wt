@@ -88,6 +88,40 @@ rel_path() {
 }
 
 # Populate WT_PATHS, WT_NAMES, WT_RELS, WT_DIRTY, WT_SUBJ
+# Uses globals set by load_feature_worktrees: _wt_path _wt_branch _wt_detached _wt_root _wt_include_main _wt_prefix
+_wt_record_worktree() {
+  local path="$1" branch="$2" detached="$3" root="$4" include_main="$5" prefix="$6"
+  [[ -z "$path" ]] && return 0
+
+  local name dirty=" " subj
+  subj="$(truncate_subject "$(git -C "$path" log -1 --pretty=%s 2>/dev/null || true)" 100)"
+  if worktree_dirty "$path"; then
+    dirty="*"
+  fi
+
+  if [[ "$include_main" -eq 1 && "$path" == "$root" ]]; then
+    WT_PATHS+=("$path")
+    WT_NAMES+=("main")
+    WT_RELS+=("$(rel_path "$root" "$path")")
+    WT_DIRTY+=("$dirty")
+    WT_SUBJ+=("$subj")
+    return 0
+  fi
+
+  case "$path" in
+    "$prefix"*)
+      name="$branch"
+      [[ -z "$name" && "$detached" -eq 1 ]] && name="(detached)"
+      [[ -z "$name" ]] && name="$(basename "$path")"
+      WT_PATHS+=("$path")
+      WT_NAMES+=("$name")
+      WT_RELS+=("$(rel_path "$root" "$path")")
+      WT_DIRTY+=("$dirty")
+      WT_SUBJ+=("$subj")
+      ;;
+  esac
+}
+
 load_feature_worktrees() {
   local root="$1"
   local include_main="${2:-0}"
@@ -100,41 +134,9 @@ load_feature_worktrees() {
   local path="" branch="" detached=0
   local prefix="$root/.worktrees/"
 
-  flush() {
-    [[ -z "$path" ]] && return 0
-
-    local name="" dirty=" " subj=""
-    subj="$(truncate_subject "$(git -C "$path" log -1 --pretty=%s 2>/dev/null || true)" 100)"
-    if worktree_dirty "$path"; then
-      dirty="*"
-    fi
-
-    if [[ "$include_main" -eq 1 && "$path" == "$root" ]]; then
-      WT_PATHS+=("$path")
-      WT_NAMES+=("main")
-      WT_RELS+=("$(rel_path "$root" "$path")")
-      WT_DIRTY+=("$dirty")
-      WT_SUBJ+=("$subj")
-      return 0
-    fi
-
-    case "$path" in
-      "$prefix"*)
-        name="$branch"
-        [[ -z "$name" && "$detached" -eq 1 ]] && name="(detached)"
-        [[ -z "$name" ]] && name="$(basename "$path")"
-        WT_PATHS+=("$path")
-        WT_NAMES+=("$name")
-        WT_RELS+=("$(rel_path "$root" "$path")")
-        WT_DIRTY+=("$dirty")
-        WT_SUBJ+=("$subj")
-        ;;
-    esac
-  }
-
   while IFS= read -r line; do
     if [[ -z "$line" ]]; then
-      flush
+      _wt_record_worktree "$path" "$branch" "$detached" "$root" "$include_main" "$prefix"
       path=""; branch=""; detached=0
       continue
     fi
@@ -144,10 +146,9 @@ load_feature_worktrees() {
       detached) detached=1 ;;
     esac
   done < <(git worktree list --porcelain)
-  flush
+  _wt_record_worktree "$path" "$branch" "$detached" "$root" "$include_main" "$prefix"
 }
 
-# Compute column widths into W_BRANCH W_PATH W_DIRTY W_COMMIT
 table_widths() {
   local i
   W_BRANCH=6  # "BRANCH"
@@ -387,7 +388,7 @@ main() {
   local cmd="${1:-}"
   if [[ -z "$cmd" ]]; then
     cmd_go
-    return 0
+    return
   fi
   shift || true
   case "$cmd" in
@@ -407,3 +408,4 @@ main() {
 }
 
 main "$@"
+exit 0
