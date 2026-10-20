@@ -14,7 +14,7 @@ wt — personal helper for Momence feature git worktrees
   wt new <branch> [path] [--no-install] [--from <ref>]
   wt list
   wt go [query]      Pick a worktree (fzf) and print its path
-  wt rm [query] [--force]
+  wt rm [query] [--force]   # auto --force if dirty (after confirm)
   wt open [query]
   wt prune
 
@@ -339,7 +339,17 @@ cmd_rm() {
     exit 1
   fi
 
+  local dirty=0
+  if worktree_dirty "$path"; then
+    dirty=1
+    force=1
+  fi
+
   echo "Remove worktree: $path" >&2
+  if [[ "$dirty" -eq 1 ]]; then
+    echo "Note: it has modified/untracked files (often node_modules). Will use --force." >&2
+  fi
+  echo "Deleting can take a while if node_modules is large (~1GB+)." >&2
   printf "Proceed? [y/N] " >&2
   local ans
   read -r ans
@@ -348,6 +358,7 @@ cmd_rm() {
     exit 1
   fi
 
+  echo "Removing…" >&2
   if [[ "$force" -eq 1 ]]; then
     git -C "$root" worktree remove --force "$path"
   else
