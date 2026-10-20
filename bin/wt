@@ -10,7 +10,7 @@ usage() {
   cat <<'HELP'
 wt — personal helper for Momence feature git worktrees
 
-  wt                 Show this help (or pick an action if fzf is available)
+  wt                 Pick a worktree with fzf and print its path (zsh: cd)
   wt new <branch> [path] [--no-install] [--from <ref>]
   wt list
   wt go [query]      Pick a worktree (fzf) and print its path
@@ -300,11 +300,7 @@ cmd_menu() {
 main() {
   local cmd="${1:-}"
   if [[ -z "$cmd" ]]; then
-    if command -v fzf >/dev/null 2>&1; then
-      cmd_menu
-    else
-      usage
-    fi
+    cmd_go
     return 0
   fi
   shift || true

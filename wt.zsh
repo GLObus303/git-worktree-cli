@@ -1,4 +1,4 @@
-# wt — zsh wrapper so `wt go` can change directory.
+# wt — zsh wrapper so `wt` / `wt go` can change directory.
 #
 # Add to ~/.zshrc:
 #   source "$HOME/Documents/Projects/git-worktree-cli/wt.zsh"
@@ -9,8 +9,8 @@ WT_BIN="${WT_BIN:-$WT_ROOT/bin/wt}"
 wt() {
   local cmd="${1:-}"
   case "$cmd" in
-    go|cd)
-      shift
+    ""|go|cd)
+      [[ -n "$cmd" ]] && shift
       local dest
       dest="$("$WT_BIN" go "$@")" || return $?
       if [[ -z "$dest" ]]; then

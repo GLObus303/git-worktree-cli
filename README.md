@@ -26,12 +26,12 @@ Reload the shell. There is no PATH install: the zsh function calls `bin/wt` by a
 ## Commands
 
 ```text
-wt                 help, or an fzf action menu
+wt                 same as wt go — fzf pick, then cd
 wt new <branch>    create under .worktrees/<branch-with-slashes-as-dashes>
                    copies Momence env files; runs yarn (skip with --no-install)
                    optional: [path] [--from <ref>]
 wt list            feature worktrees + main (* = dirty)
-wt go [query]      fzf pick (arrows), then cd into it
+wt go [query]      fzf pick (arrows), then cd (alias of bare wt)
 wt rm [query]      remove worktree only (branch stays); --force if dirty
 wt open [query]    open in Cursor (or VS Code)
 wt prune           git worktree prune
