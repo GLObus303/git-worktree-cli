@@ -1,0 +1,327 @@
+#!/usr/bin/env bash
+# wt — personal Momence feature-worktree helper
+set -euo pipefail
+
+WT_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/create.sh
+source "$WT_HOME/lib/create.sh"
+
+usage() {
+  cat <<'HELP'
+wt — personal helper for Momence feature git worktrees
+
+  wt                 Show this help (or pick an action if fzf is available)
+  wt new <branch> [path] [--no-install] [--from <ref>]
+  wt list
+  wt go [query]      Pick a worktree (fzf) and print its path
+  wt rm [query] [--force]
+  wt open [query]
+  wt prune
+
+Hardcoded for the Momence monorepo layout (.worktrees/, env copy, yarn).
+Only manages checkouts under <repo>/.worktrees/ — not Cursor agent trees.
+HELP
+}
+
+require_fzf() {
+  if ! command -v fzf >/dev/null 2>&1; then
+    echo "fzf is required for interactive pick. Install it: brew install fzf" >&2
+    exit 1
+  fi
+}
+
+# Primary checkout of the shared repo (first worktree in list).
+main_root() {
+  git rev-parse --path-format=absolute --show-toplevel 2>/dev/null \
+    || { echo "Not inside a git repository." >&2; exit 1; }
+  # Prefer the main worktree path from porcelain
+  local path=""
+  while IFS= read -r line; do
+    case "$line" in
+      worktree\ *)
+        path="${line#worktree }"
+        # First entry is the main worktree
+        printf '%s\n' "$path"
+        return 0
+        ;;
+    esac
+  done < <(git worktree list --porcelain)
+  git rev-parse --path-format=absolute --show-toplevel
+}
+
+repo_root() {
+  # Common git dir's parent main checkout for consistent .worktrees path
+  local common
+  common="$(git rev-parse --path-format=absolute --git-common-dir)"
+  # git-common-dir is usually <main>/.git — main root is dirname of that,
+  # unless it's a bare repo. For worktrees, common dir is main's .git.
+  if [[ "$(basename "$common")" == ".git" ]]; then
+    dirname "$common"
+  else
+    # Fallback: first porcelain worktree
+    main_root
+  fi
+}
+
+looks_like_momence() {
+  local root="$1"
+  [[ -d "$root/backend" && -d "$root/frontend" && -d "$root/eslint-plugin" ]]
+}
+
+warn_if_not_momence() {
+  local root="$1"
+  if ! looks_like_momence "$root"; then
+    echo "Warning: this does not look like the Momence monorepo (expected backend/, frontend/, eslint-plugin/)." >&2
+  fi
+}
+
+# Populate arrays: WT_PATHS[], WT_LABELS[] for feature worktrees under .worktrees/
+# Optionally include main as index 0 when INCLUDE_MAIN=1
+load_feature_worktrees() {
+  local root="$1"
+  local include_main="${2:-0}"
+  WT_PATHS=()
+  WT_LABELS=()
+
+  local path="" branch="" bare=0 detached=0
+  local prefix="$root/.worktrees/"
+
+  flush() {
+    [[ -z "$path" ]] && return 0
+    if [[ "$include_main" -eq 1 && "$path" == "$root" ]]; then
+      local dirty=""
+      if ! git -C "$path" diff --quiet HEAD 2>/dev/null || ! git -C "$path" diff --cached --quiet 2>/dev/null; then
+        dirty=" *"
+      elif [[ -n "$(git -C "$path" ls-files --others --exclude-standard 2>/dev/null | head -1)" ]]; then
+        dirty=" *"
+      fi
+      WT_PATHS+=("$path")
+      WT_LABELS+=("main	$path (main)$dirty")
+      return 0
+    fi
+    case "$path" in
+      "$prefix"*)
+        local dirty=""
+        if ! git -C "$path" diff --quiet HEAD 2>/dev/null || ! git -C "$path" diff --cached --quiet 2>/dev/null; then
+          dirty=" *"
+        elif [[ -n "$(git -C "$path" ls-files --others --exclude-standard 2>/dev/null | head -1)" ]]; then
+          dirty=" *"
+        fi
+        local name="$branch"
+        [[ -z "$name" && "$detached" -eq 1 ]] && name="(detached)"
+        [[ -z "$name" ]] && name="$(basename "$path")"
+        WT_PATHS+=("$path")
+        WT_LABELS+=("$name	$path$dirty")
+        ;;
+    esac
+  }
+
+  while IFS= read -r line; do
+    if [[ -z "$line" ]]; then
+      flush
+      path=""; branch=""; bare=0; detached=0
+      continue
+    fi
+    case "$line" in
+      worktree\ *) path="${line#worktree }" ;;
+      branch\ *) branch="${line#branch refs/heads/}" ;;
+      bare) bare=1 ;;
+      detached) detached=1 ;;
+    esac
+  done < <(git worktree list --porcelain)
+  flush
+}
+
+pick_worktree() {
+  local root="$1"
+  local query="${2:-}"
+  local include_main="${3:-0}"
+
+  load_feature_worktrees "$root" "$include_main"
+
+  if [[ ${#WT_PATHS[@]} -eq 0 ]]; then
+    echo "No feature worktrees under $root/.worktrees/" >&2
+    exit 1
+  fi
+
+  # Filter by query
+  local filtered_paths=() filtered_labels=()
+  local i
+  if [[ -n "$query" ]]; then
+    for i in "${!WT_PATHS[@]}"; do
+      if [[ "${WT_LABELS[$i]}" == *"$query"* || "${WT_PATHS[$i]}" == *"$query"* ]]; then
+        filtered_paths+=("${WT_PATHS[$i]}")
+        filtered_labels+=("${WT_LABELS[$i]}")
+      fi
+    done
+  else
+    filtered_paths=("${WT_PATHS[@]}")
+    filtered_labels=("${WT_LABELS[@]}")
+  fi
+
+  if [[ ${#filtered_paths[@]} -eq 0 ]]; then
+    echo "No worktree matched: $query" >&2
+    exit 1
+  fi
+
+  if [[ ${#filtered_paths[@]} -eq 1 ]]; then
+    printf '%s\n' "${filtered_paths[0]}"
+    return 0
+  fi
+
+  require_fzf
+
+  local choice
+  choice="$(printf '%s\n' "${filtered_labels[@]}" | fzf --height=40% --reverse --prompt='worktree> ')" || exit 1
+  # Label format: name<TAB>path[ *] — path is after first tab, strip trailing " *" and " (main)"
+  local path_part="${choice#*$'\t'}"
+  path_part="${path_part% \*}"
+  path_part="${path_part% (main)}"
+  # Prefer matching against known paths
+  for i in "${!filtered_labels[@]}"; do
+    if [[ "${filtered_labels[$i]}" == "$choice" ]]; then
+      printf '%s\n' "${filtered_paths[$i]}"
+      return 0
+    fi
+  done
+  printf '%s\n' "$path_part"
+}
+
+cmd_list() {
+  local root
+  root="$(repo_root)"
+  warn_if_not_momence "$root"
+  load_feature_worktrees "$root" 1
+  if [[ ${#WT_LABELS[@]} -eq 0 ]]; then
+    echo "No worktrees to show."
+    return 0
+  fi
+  local i
+  for i in "${!WT_LABELS[@]}"; do
+    # Replace tab with two spaces for display
+    echo "${WT_LABELS[$i]//	/  }"
+  done
+}
+
+cmd_go() {
+  local root
+  root="$(repo_root)"
+  warn_if_not_momence "$root"
+  pick_worktree "$root" "${1:-}" 0
+}
+
+cmd_open() {
+  local root path
+  root="$(repo_root)"
+  warn_if_not_momence "$root"
+  path="$(pick_worktree "$root" "${1:-}" 0)"
+  if command -v cursor >/dev/null 2>&1; then
+    cursor "$path"
+  elif command -v code >/dev/null 2>&1; then
+    code "$path"
+  else
+    echo "Neither cursor nor code found on PATH." >&2
+    echo "$path"
+    exit 1
+  fi
+}
+
+cmd_rm() {
+  local root force=0 query=""
+  root="$(repo_root)"
+  warn_if_not_momence "$root"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --force|-f) force=1; shift ;;
+      *) query="$1"; shift ;;
+    esac
+  done
+
+  local path
+  path="$(pick_worktree "$root" "$query" 0)"
+
+  if [[ "$path" == "$root" ]]; then
+    echo "Refusing to remove the main checkout." >&2
+    exit 1
+  fi
+
+  echo "Remove worktree: $path" >&2
+  printf "Proceed? [y/N] " >&2
+  local ans
+  read -r ans
+  if [[ ! "$ans" =~ ^[Yy]$ ]]; then
+    echo "Aborted." >&2
+    exit 1
+  fi
+
+  if [[ "$force" -eq 1 ]]; then
+    git -C "$root" worktree remove --force "$path"
+  else
+    git -C "$root" worktree remove "$path"
+  fi
+  echo "Removed $path" >&2
+}
+
+cmd_new() {
+  local root
+  root="$(repo_root)"
+  if ! looks_like_momence "$root"; then
+    echo "Refusing wt new: this does not look like the Momence monorepo (need backend/, frontend/, eslint-plugin/)." >&2
+    exit 1
+  fi
+  create_worktree "$root" "$@"
+}
+
+cmd_prune() {
+  local root
+  root="$(repo_root)"
+  git -C "$root" worktree prune -v
+}
+
+cmd_menu() {
+  require_fzf
+  local action
+  action="$(printf '%s\n' go list open rm new prune help | fzf --height=40% --reverse --prompt='wt> ')" || exit 1
+  case "$action" in
+    go) cmd_go ;;
+    list) cmd_list ;;
+    open) cmd_open ;;
+    rm) cmd_rm ;;
+    new)
+      echo "Usage: wt new <branch> [path] [--no-install] [--from <ref>]" >&2
+      exit 1
+      ;;
+    prune) cmd_prune ;;
+    help) usage ;;
+  esac
+}
+
+main() {
+  local cmd="${1:-}"
+  if [[ -z "$cmd" ]]; then
+    if command -v fzf >/dev/null 2>&1; then
+      cmd_menu
+    else
+      usage
+    fi
+    return 0
+  fi
+  shift || true
+  case "$cmd" in
+    -h|--help|help) usage ;;
+    new) cmd_new "$@" ;;
+    list|ls) cmd_list "$@" ;;
+    go|cd) cmd_go "$@" ;;
+    rm|remove) cmd_rm "$@" ;;
+    open) cmd_open "$@" ;;
+    prune) cmd_prune "$@" ;;
+    *)
+      echo "Unknown command: $cmd" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
