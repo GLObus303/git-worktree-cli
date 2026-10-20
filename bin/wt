@@ -207,14 +207,14 @@ cmd_go() {
   local root
   root="$(repo_root)"
   warn_if_not_momence "$root"
-  pick_worktree "$root" "${1:-}" 0
+  pick_worktree "$root" "${1:-}" 1
 }
 
 cmd_open() {
   local root path
   root="$(repo_root)"
   warn_if_not_momence "$root"
-  path="$(pick_worktree "$root" "${1:-}" 0)"
+  path="$(pick_worktree "$root" "${1:-}" 1)"
   if command -v cursor >/dev/null 2>&1; then
     cursor "$path"
   elif command -v code >/dev/null 2>&1; then
