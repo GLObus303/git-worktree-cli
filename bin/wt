@@ -16,12 +16,14 @@ wt — personal helper for Momence feature git worktrees
   wt go [query]      Pick a worktree (fzf) and print its path
   wt rm [query] [--force]   # auto --force if dirty (after confirm)
   wt open [query]
+  wt claim <branch>          # checkout branch here; detach the worktree that held it
   wt prune
 
 Hardcoded for the Momence monorepo layout (.worktrees/, env copy, yarn).
 Only manages checkouts under <repo>/.worktrees/ — not Cursor agent trees.
 
 list/go show a bordered table: branch, relative path, dirty, commit subject (max 100).
+Git allows a branch in only one worktree — use claim or wt go.
 HELP
 }
 
@@ -378,6 +380,74 @@ cmd_new() {
   create_worktree "$root" "$@"
 }
 
+# Find absolute path of the worktree that has branch checked out (empty if none).
+worktree_path_for_branch() {
+  local want="$1"
+  local path="" branch=""
+  while IFS= read -r line; do
+    if [[ -z "$line" ]]; then
+      if [[ "$branch" == "$want" && -n "$path" ]]; then
+        printf '%s\n' "$path"
+        return 0
+      fi
+      path=""; branch=""
+      continue
+    fi
+    case "$line" in
+      worktree\ *) path="${line#worktree }" ;;
+      branch\ refs/heads/*) branch="${line#branch refs/heads/}" ;;
+      detached) branch="" ;;
+    esac
+  done < <(git worktree list --porcelain)
+  if [[ "$branch" == "$want" && -n "$path" ]]; then
+    printf '%s\n' "$path"
+    return 0
+  fi
+  return 1
+}
+
+cmd_claim() {
+  local branch="${1:-}"
+  if [[ -z "$branch" ]]; then
+    echo "Usage: wt claim <branch>" >&2
+    exit 1
+  fi
+
+  local here holder
+  here="$(git rev-parse --path-format=absolute --show-toplevel)"
+  local current
+  current="$(git -C "$here" branch --show-current 2>/dev/null || true)"
+  if [[ "$current" == "$branch" ]]; then
+    echo "Already on '$branch' in $here" >&2
+    return 0
+  fi
+
+  if holder="$(worktree_path_for_branch "$branch")"; then
+    if [[ "$holder" == "$here" ]]; then
+      echo "Already on '$branch' in $here" >&2
+      return 0
+    fi
+    echo "Branch '$branch' is checked out in:" >&2
+    echo "  $holder" >&2
+    echo "Git only allows one checkout per branch." >&2
+    echo "This will detach that worktree (leave it on a commit, not the branch), then check out '$branch' here." >&2
+    printf "Proceed? [y/N] " >&2
+    local ans
+    read -r ans
+    if [[ ! "$ans" =~ ^[Yy]$ ]]; then
+      echo "Aborted. Tip: wt go  # work in the existing worktree instead" >&2
+      exit 1
+    fi
+    echo "Detaching $holder …" >&2
+    git -C "$holder" checkout --detach HEAD
+  fi
+
+  echo "Checking out '$branch' in $here …" >&2
+  git -C "$here" checkout "$branch"
+  echo "Now on '$branch' in $here" >&2
+}
+
+
 cmd_prune() {
   local root
   root="$(repo_root)"
@@ -398,6 +468,7 @@ main() {
     go|cd) cmd_go "$@" ;;
     rm|remove) cmd_rm "$@" ;;
     open) cmd_open "$@" ;;
+    claim) cmd_claim "$@" ;;
     prune) cmd_prune "$@" ;;
     *)
       echo "Unknown command: $cmd" >&2

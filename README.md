@@ -34,6 +34,7 @@ wt list            bordered table: branch, path, dirty, commit subject ≤100
 wt go [query]      fzf pick (arrows), then cd — includes main + .worktrees/*
 wt rm [query]      remove worktree only (branch stays); --force if dirty
 wt open [query]    open in Cursor (or VS Code)
+wt claim <branch>  checkout branch here (detach the worktree that held it)
 wt prune           git worktree prune
 ```
 
@@ -46,3 +47,5 @@ wt prune           git worktree prune
 - The Momence monorepo may still have a Cursor `/create-worktree` helper. That is separate from `wt`.
 
 `list` / `go` show a bordered table (branch, relative path, dirty `*`, last commit subject ≤100 chars). No GitHub/PR calls.
+
+Git only allows one worktree per branch. To work on a branch that already has a worktree, use `wt go` (cd there) or `wt claim <branch>` (steal the checkout into your current tree; the other worktree goes detached).
