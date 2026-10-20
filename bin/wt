@@ -20,6 +20,8 @@ wt — personal helper for Momence feature git worktrees
 
 Hardcoded for the Momence monorepo layout (.worktrees/, env copy, yarn).
 Only manages checkouts under <repo>/.worktrees/ — not Cursor agent trees.
+
+list/go lines show: dirty *, open PR ✓#N, and last commit subject (max 100 chars).
 HELP
 }
 
@@ -30,36 +32,14 @@ require_fzf() {
   fi
 }
 
-# Primary checkout of the shared repo (first worktree in list).
-main_root() {
-  git rev-parse --path-format=absolute --show-toplevel 2>/dev/null \
-    || { echo "Not inside a git repository." >&2; exit 1; }
-  # Prefer the main worktree path from porcelain
-  local path=""
-  while IFS= read -r line; do
-    case "$line" in
-      worktree\ *)
-        path="${line#worktree }"
-        # First entry is the main worktree
-        printf '%s\n' "$path"
-        return 0
-        ;;
-    esac
-  done < <(git worktree list --porcelain)
-  git rev-parse --path-format=absolute --show-toplevel
-}
-
 repo_root() {
-  # Common git dir's parent main checkout for consistent .worktrees path
   local common
-  common="$(git rev-parse --path-format=absolute --git-common-dir)"
-  # git-common-dir is usually <main>/.git — main root is dirname of that,
-  # unless it's a bare repo. For worktrees, common dir is main's .git.
+  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+    || { echo "Not inside a git repository." >&2; exit 1; }
   if [[ "$(basename "$common")" == ".git" ]]; then
     dirname "$common"
   else
-    # Fallback: first porcelain worktree
-    main_root
+    git rev-parse --path-format=absolute --show-toplevel
   fi
 }
 
@@ -75,13 +55,111 @@ warn_if_not_momence() {
   fi
 }
 
-# Populate arrays: WT_PATHS[], WT_LABELS[] for feature worktrees under .worktrees/
-# Optionally include main as index 0 when INCLUDE_MAIN=1
+load_pr_map() {
+  local root="$1"
+  WT_PR_MAP=()
+  WT_GH_REPO=""
+  if ! command -v gh >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local remote
+  remote="$(git -C "$root" remote get-url origin 2>/dev/null || true)"
+  WT_GH_REPO="$(printf '%s\n' "$remote" | sed -E 's#^(git@github\.com:|https://github\.com/)##; s#\.git$##')"
+  if [[ -z "$WT_GH_REPO" || "$WT_GH_REPO" != */* ]]; then
+    WT_GH_REPO=""
+  fi
+}
+
+# Prefer an open PR; otherwise any PR for the branch. Cache in WT_PR_MAP.
+pr_for_branch() {
+  local want="$1" entry head num
+  for entry in "${WT_PR_MAP[@]+"${WT_PR_MAP[@]}"}"; do
+    head="${entry%%$'\t'*}"
+    num="${entry#*$'\t'}"
+    if [[ "$head" == "$want" ]]; then
+      if [[ "$num" == "-" ]]; then
+        return 1
+      fi
+      printf '%s\n' "$num"
+      return 0
+    fi
+  done
+
+  if [[ -z "${WT_GH_REPO:-}" ]]; then
+    return 1
+  fi
+
+  local found=""
+  found="$(gh pr list -R "$WT_GH_REPO" --head "$want" --state open --limit 1 \
+    --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+  if [[ -z "$found" ]]; then
+    found="$(gh pr list -R "$WT_GH_REPO" --head "$want" --state all --limit 1 \
+      --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+  fi
+
+  if [[ -n "$found" ]]; then
+    WT_PR_MAP+=("${want}"$'\t'"${found}")
+    printf '%s\n' "$found"
+    return 0
+  fi
+
+  WT_PR_MAP+=("${want}"$'\t'"-")
+  return 1
+}
+truncate_subject() {
+  local s="$1"
+  local max="${2:-100}"
+  if ((${#s} > max)); then
+    printf '%s\n' "${s:0:$((max - 1))}…"
+  else
+    printf '%s\n' "$s"
+  fi
+}
+
+worktree_dirty() {
+  local path="$1"
+  if ! git -C "$path" diff --quiet HEAD 2>/dev/null || ! git -C "$path" diff --cached --quiet 2>/dev/null; then
+    return 0
+  fi
+  if [[ -n "$(git -C "$path" ls-files --others --exclude-standard 2>/dev/null | head -1)" ]]; then
+    return 0
+  fi
+  return 1
+}
+
+format_label() {
+  local name="$1" path="$2" branch="$3" is_main="$4"
+  local dirty="" pr="" subj=""
+
+  if worktree_dirty "$path"; then
+    dirty=" *"
+  fi
+
+  subj="$(git -C "$path" log -1 --pretty=%s 2>/dev/null || true)"
+  subj="$(truncate_subject "$subj" 100)"
+
+  if [[ "$is_main" -eq 0 && -n "$branch" ]]; then
+    local num
+    if num="$(pr_for_branch "$branch")"; then
+      pr=" ✓#$num"
+    fi
+  fi
+
+  if [[ "$is_main" -eq 1 ]]; then
+    printf '%s\t%s (main)%s%s  %s' "$name" "$path" "$dirty" "$pr" "$subj"
+  else
+    printf '%s\t%s%s%s  %s' "$name" "$path" "$dirty" "$pr" "$subj"
+  fi
+}
+
 load_feature_worktrees() {
   local root="$1"
   local include_main="${2:-0}"
   WT_PATHS=()
   WT_LABELS=()
+
+  load_pr_map "$root"
 
   local path="" branch="" bare=0 detached=0
   local prefix="$root/.worktrees/"
@@ -89,29 +167,17 @@ load_feature_worktrees() {
   flush() {
     [[ -z "$path" ]] && return 0
     if [[ "$include_main" -eq 1 && "$path" == "$root" ]]; then
-      local dirty=""
-      if ! git -C "$path" diff --quiet HEAD 2>/dev/null || ! git -C "$path" diff --cached --quiet 2>/dev/null; then
-        dirty=" *"
-      elif [[ -n "$(git -C "$path" ls-files --others --exclude-standard 2>/dev/null | head -1)" ]]; then
-        dirty=" *"
-      fi
       WT_PATHS+=("$path")
-      WT_LABELS+=("main	$path (main)$dirty")
+      WT_LABELS+=("$(format_label "main" "$path" "" 1)")
       return 0
     fi
     case "$path" in
       "$prefix"*)
-        local dirty=""
-        if ! git -C "$path" diff --quiet HEAD 2>/dev/null || ! git -C "$path" diff --cached --quiet 2>/dev/null; then
-          dirty=" *"
-        elif [[ -n "$(git -C "$path" ls-files --others --exclude-standard 2>/dev/null | head -1)" ]]; then
-          dirty=" *"
-        fi
         local name="$branch"
         [[ -z "$name" && "$detached" -eq 1 ]] && name="(detached)"
         [[ -z "$name" ]] && name="$(basename "$path")"
         WT_PATHS+=("$path")
-        WT_LABELS+=("$name	$path$dirty")
+        WT_LABELS+=("$(format_label "$name" "$path" "$branch" 0)")
         ;;
     esac
   }
@@ -144,7 +210,6 @@ pick_worktree() {
     exit 1
   fi
 
-  # Filter by query
   local filtered_paths=() filtered_labels=()
   local i
   if [[ -n "$query" ]]; then
@@ -173,18 +238,14 @@ pick_worktree() {
 
   local choice
   choice="$(printf '%s\n' "${filtered_labels[@]}" | fzf --height=40% --reverse --prompt='worktree> ')" || exit 1
-  # Label format: name<TAB>path[ *] — path is after first tab, strip trailing " *" and " (main)"
-  local path_part="${choice#*$'\t'}"
-  path_part="${path_part% \*}"
-  path_part="${path_part% (main)}"
-  # Prefer matching against known paths
   for i in "${!filtered_labels[@]}"; do
     if [[ "${filtered_labels[$i]}" == "$choice" ]]; then
       printf '%s\n' "${filtered_paths[$i]}"
       return 0
     fi
   done
-  printf '%s\n' "$path_part"
+  echo "Selection did not match a known worktree." >&2
+  exit 1
 }
 
 cmd_list() {
@@ -198,7 +259,6 @@ cmd_list() {
   fi
   local i
   for i in "${!WT_LABELS[@]}"; do
-    # Replace tab with two spaces for display
     echo "${WT_LABELS[$i]//	/  }"
   done
 }
@@ -277,24 +337,6 @@ cmd_prune() {
   local root
   root="$(repo_root)"
   git -C "$root" worktree prune -v
-}
-
-cmd_menu() {
-  require_fzf
-  local action
-  action="$(printf '%s\n' go list open rm new prune help | fzf --height=40% --reverse --prompt='wt> ')" || exit 1
-  case "$action" in
-    go) cmd_go ;;
-    list) cmd_list ;;
-    open) cmd_open ;;
-    rm) cmd_rm ;;
-    new)
-      echo "Usage: wt new <branch> [path] [--no-install] [--from <ref>]" >&2
-      exit 1
-      ;;
-    prune) cmd_prune ;;
-    help) usage ;;
-  esac
 }
 
 main() {
