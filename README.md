@@ -30,7 +30,7 @@ wt                 same as wt go — fzf pick, then cd
 wt new <branch>    create under .worktrees/<branch-with-slashes-as-dashes>
                    copies Momence env files; runs yarn (skip with --no-install)
                    optional: [path] [--from <ref>]
-wt list            feature worktrees + main (* dirty, ✓#N PR, commit subject ≤100)
+wt list            bordered table: branch, path, dirty, commit subject ≤100
 wt go [query]      fzf pick (arrows), then cd — includes main + .worktrees/*
 wt rm [query]      remove worktree only (branch stays); --force if dirty
 wt open [query]    open in Cursor (or VS Code)
@@ -45,4 +45,4 @@ wt prune           git worktree prune
 - Copied `.env*` files keep the same ports. Two checkouts serving at once will collide.
 - The Momence monorepo may still have a Cursor `/create-worktree` helper. That is separate from `wt`.
 
-`list` / `go` show dirty `*`, PR as `✓#N` (via `gh`, open preferred else any), and the last commit subject (max 100 chars).
+`list` / `go` show a bordered table (branch, relative path, dirty `*`, last commit subject ≤100 chars). No GitHub/PR calls.

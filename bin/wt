@@ -21,7 +21,7 @@ wt — personal helper for Momence feature git worktrees
 Hardcoded for the Momence monorepo layout (.worktrees/, env copy, yarn).
 Only manages checkouts under <repo>/.worktrees/ — not Cursor agent trees.
 
-list/go lines show: dirty *, open PR ✓#N, and last commit subject (max 100 chars).
+list/go show a bordered table: branch, relative path, dirty, commit subject (max 100).
 HELP
 }
 
@@ -55,65 +55,13 @@ warn_if_not_momence() {
   fi
 }
 
-load_pr_map() {
-  local root="$1"
-  WT_PR_MAP=()
-  WT_GH_REPO=""
-  if ! command -v gh >/dev/null 2>&1; then
-    return 0
-  fi
-
-  local remote
-  remote="$(git -C "$root" remote get-url origin 2>/dev/null || true)"
-  WT_GH_REPO="$(printf '%s\n' "$remote" | sed -E 's#^(git@github\.com:|https://github\.com/)##; s#\.git$##')"
-  if [[ -z "$WT_GH_REPO" || "$WT_GH_REPO" != */* ]]; then
-    WT_GH_REPO=""
-  fi
-}
-
-# Prefer an open PR; otherwise any PR for the branch. Cache in WT_PR_MAP.
-pr_for_branch() {
-  local want="$1" entry head num
-  for entry in "${WT_PR_MAP[@]+"${WT_PR_MAP[@]}"}"; do
-    head="${entry%%$'\t'*}"
-    num="${entry#*$'\t'}"
-    if [[ "$head" == "$want" ]]; then
-      if [[ "$num" == "-" ]]; then
-        return 1
-      fi
-      printf '%s\n' "$num"
-      return 0
-    fi
-  done
-
-  if [[ -z "${WT_GH_REPO:-}" ]]; then
-    return 1
-  fi
-
-  local found=""
-  found="$(gh pr list -R "$WT_GH_REPO" --head "$want" --state open --limit 1 \
-    --json number --jq '.[0].number // empty' 2>/dev/null || true)"
-  if [[ -z "$found" ]]; then
-    found="$(gh pr list -R "$WT_GH_REPO" --head "$want" --state all --limit 1 \
-      --json number --jq '.[0].number // empty' 2>/dev/null || true)"
-  fi
-
-  if [[ -n "$found" ]]; then
-    WT_PR_MAP+=("${want}"$'\t'"${found}")
-    printf '%s\n' "$found"
-    return 0
-  fi
-
-  WT_PR_MAP+=("${want}"$'\t'"-")
-  return 1
-}
 truncate_subject() {
   local s="$1"
   local max="${2:-100}"
   if ((${#s} > max)); then
-    printf '%s\n' "${s:0:$((max - 1))}…"
+    printf '%s' "${s:0:$((max - 1))}…"
   else
-    printf '%s\n' "$s"
+    printf '%s' "$s"
   fi
 }
 
@@ -128,56 +76,58 @@ worktree_dirty() {
   return 1
 }
 
-format_label() {
-  local name="$1" path="$2" branch="$3" is_main="$4"
-  local dirty="" pr="" subj=""
-
-  if worktree_dirty "$path"; then
-    dirty=" *"
-  fi
-
-  subj="$(git -C "$path" log -1 --pretty=%s 2>/dev/null || true)"
-  subj="$(truncate_subject "$subj" 100)"
-
-  if [[ "$is_main" -eq 0 && -n "$branch" ]]; then
-    local num
-    if num="$(pr_for_branch "$branch")"; then
-      pr=" ✓#$num"
-    fi
-  fi
-
-  if [[ "$is_main" -eq 1 ]]; then
-    printf '%s\t%s (main)%s%s  %s' "$name" "$path" "$dirty" "$pr" "$subj"
+rel_path() {
+  local root="$1" path="$2"
+  if [[ "$path" == "$root" ]]; then
+    printf '%s' "."
+  elif [[ "$path" == "$root"/* ]]; then
+    printf '%s' "${path#"$root"/}"
   else
-    printf '%s\t%s%s%s  %s' "$name" "$path" "$dirty" "$pr" "$subj"
+    printf '%s' "$path"
   fi
 }
 
+# Populate WT_PATHS, WT_NAMES, WT_RELS, WT_DIRTY, WT_SUBJ
 load_feature_worktrees() {
   local root="$1"
   local include_main="${2:-0}"
   WT_PATHS=()
-  WT_LABELS=()
+  WT_NAMES=()
+  WT_RELS=()
+  WT_DIRTY=()
+  WT_SUBJ=()
 
-  load_pr_map "$root"
-
-  local path="" branch="" bare=0 detached=0
+  local path="" branch="" detached=0
   local prefix="$root/.worktrees/"
 
   flush() {
     [[ -z "$path" ]] && return 0
+
+    local name="" dirty=" " subj=""
+    subj="$(truncate_subject "$(git -C "$path" log -1 --pretty=%s 2>/dev/null || true)" 100)"
+    if worktree_dirty "$path"; then
+      dirty="*"
+    fi
+
     if [[ "$include_main" -eq 1 && "$path" == "$root" ]]; then
       WT_PATHS+=("$path")
-      WT_LABELS+=("$(format_label "main" "$path" "" 1)")
+      WT_NAMES+=("main")
+      WT_RELS+=("$(rel_path "$root" "$path")")
+      WT_DIRTY+=("$dirty")
+      WT_SUBJ+=("$subj")
       return 0
     fi
+
     case "$path" in
       "$prefix"*)
-        local name="$branch"
+        name="$branch"
         [[ -z "$name" && "$detached" -eq 1 ]] && name="(detached)"
         [[ -z "$name" ]] && name="$(basename "$path")"
         WT_PATHS+=("$path")
-        WT_LABELS+=("$(format_label "$name" "$path" "$branch" 0)")
+        WT_NAMES+=("$name")
+        WT_RELS+=("$(rel_path "$root" "$path")")
+        WT_DIRTY+=("$dirty")
+        WT_SUBJ+=("$subj")
         ;;
     esac
   }
@@ -185,17 +135,93 @@ load_feature_worktrees() {
   while IFS= read -r line; do
     if [[ -z "$line" ]]; then
       flush
-      path=""; branch=""; bare=0; detached=0
+      path=""; branch=""; detached=0
       continue
     fi
     case "$line" in
       worktree\ *) path="${line#worktree }" ;;
       branch\ *) branch="${line#branch refs/heads/}" ;;
-      bare) bare=1 ;;
       detached) detached=1 ;;
     esac
   done < <(git worktree list --porcelain)
   flush
+}
+
+# Compute column widths into W_BRANCH W_PATH W_DIRTY W_COMMIT
+table_widths() {
+  local i
+  W_BRANCH=6  # "BRANCH"
+  W_PATH=4    # "PATH"
+  W_DIRTY=1   # "*"
+  W_COMMIT=6  # "COMMIT"
+  for i in "${!WT_NAMES[@]}"; do
+    (( ${#WT_NAMES[$i]} > W_BRANCH )) && W_BRANCH=${#WT_NAMES[$i]}
+    (( ${#WT_RELS[$i]} > W_PATH )) && W_PATH=${#WT_RELS[$i]}
+    (( ${#WT_SUBJ[$i]} > W_COMMIT )) && W_COMMIT=${#WT_SUBJ[$i]}
+  done
+}
+
+pad() {
+  local s="$1" w="$2"
+  printf '%-*s' "$w" "$s"
+}
+
+# One data row: │ name │ path │ * │ commit │
+table_row() {
+  local i="$1"
+  printf '│ %s │ %s │ %s │ %s │' \
+    "$(pad "${WT_NAMES[$i]}" "$W_BRANCH")" \
+    "$(pad "${WT_RELS[$i]}" "$W_PATH")" \
+    "$(pad "${WT_DIRTY[$i]}" "$W_DIRTY")" \
+    "$(pad "${WT_SUBJ[$i]}" "$W_COMMIT")"
+}
+
+table_rule() {
+  # $1 = left $2 = mid $3 = right  e.g. ┌ ┬ ┐
+  local l="$1" m="$2" r="$3"
+  local i
+  printf '%s' "$l"
+  printf '─%.0s' $(seq 1 $((W_BRANCH + 2)))
+  printf '%s' "$m"
+  printf '─%.0s' $(seq 1 $((W_PATH + 2)))
+  printf '%s' "$m"
+  printf '─%.0s' $(seq 1 $((W_DIRTY + 2)))
+  printf '%s' "$m"
+  printf '─%.0s' $(seq 1 $((W_COMMIT + 2)))
+  printf '%s\n' "$r"
+}
+
+table_header_row() {
+  printf '│ %s │ %s │ %s │ %s │' \
+    "$(pad "BRANCH" "$W_BRANCH")" \
+    "$(pad "PATH" "$W_PATH")" \
+    "$(pad "*" "$W_DIRTY")" \
+    "$(pad "COMMIT" "$W_COMMIT")"
+  printf '\n'
+}
+
+# Print full bordered table to stdout
+print_table() {
+  table_widths
+  table_rule "┌" "┬" "┐"
+  table_header_row
+  table_rule "├" "┼" "┤"
+  local i
+  for i in "${!WT_NAMES[@]}"; do
+    table_row "$i"
+    printf '\n'
+  done
+  table_rule "└" "┴" "┘"
+}
+
+# Build selectable fzf lines (data rows only) + sticky header with borders
+fzf_header() {
+  table_widths
+  {
+    table_rule "┌" "┬" "┐"
+    table_header_row
+    table_rule "├" "┼" "┤"
+  } | tr '\n' $'\n'
 }
 
 pick_worktree() {
@@ -210,37 +236,47 @@ pick_worktree() {
     exit 1
   fi
 
-  local filtered_paths=() filtered_labels=()
+  local idxs=()
   local i
   if [[ -n "$query" ]]; then
     for i in "${!WT_PATHS[@]}"; do
-      if [[ "${WT_LABELS[$i]}" == *"$query"* || "${WT_PATHS[$i]}" == *"$query"* ]]; then
-        filtered_paths+=("${WT_PATHS[$i]}")
-        filtered_labels+=("${WT_LABELS[$i]}")
+      if [[ "${WT_NAMES[$i]}" == *"$query"* || "${WT_RELS[$i]}" == *"$query"* || "${WT_SUBJ[$i]}" == *"$query"* || "${WT_PATHS[$i]}" == *"$query"* ]]; then
+        idxs+=("$i")
       fi
     done
   else
-    filtered_paths=("${WT_PATHS[@]}")
-    filtered_labels=("${WT_LABELS[@]}")
+    for i in "${!WT_PATHS[@]}"; do
+      idxs+=("$i")
+    done
   fi
 
-  if [[ ${#filtered_paths[@]} -eq 0 ]]; then
+  if [[ ${#idxs[@]} -eq 0 ]]; then
     echo "No worktree matched: $query" >&2
     exit 1
   fi
 
-  if [[ ${#filtered_paths[@]} -eq 1 ]]; then
-    printf '%s\n' "${filtered_paths[0]}"
+  if [[ ${#idxs[@]} -eq 1 ]]; then
+    printf '%s\n' "${WT_PATHS[${idxs[0]}]}"
     return 0
   fi
 
   require_fzf
+  table_widths
+
+  local rows=()
+  for i in "${idxs[@]}"; do
+    rows+=("$(table_row "$i")")
+  done
+
+  local header
+  header="$(table_rule "┌" "┬" "┐"; table_header_row; table_rule "├" "┼" "┤")"
 
   local choice
-  choice="$(printf '%s\n' "${filtered_labels[@]}" | fzf --height=40% --reverse --prompt='worktree> ')" || exit 1
-  for i in "${!filtered_labels[@]}"; do
-    if [[ "${filtered_labels[$i]}" == "$choice" ]]; then
-      printf '%s\n' "${filtered_paths[$i]}"
+  choice="$(printf '%s\n' "${rows[@]}" | fzf --height=40% --reverse --prompt='worktree> ' --header="$header")" || exit 1
+
+  for i in "${idxs[@]}"; do
+    if [[ "$(table_row "$i")" == "$choice" ]]; then
+      printf '%s\n' "${WT_PATHS[$i]}"
       return 0
     fi
   done
@@ -253,14 +289,11 @@ cmd_list() {
   root="$(repo_root)"
   warn_if_not_momence "$root"
   load_feature_worktrees "$root" 1
-  if [[ ${#WT_LABELS[@]} -eq 0 ]]; then
+  if [[ ${#WT_PATHS[@]} -eq 0 ]]; then
     echo "No worktrees to show."
     return 0
   fi
-  local i
-  for i in "${!WT_LABELS[@]}"; do
-    echo "${WT_LABELS[$i]//	/  }"
-  done
+  print_table
 }
 
 cmd_go() {
