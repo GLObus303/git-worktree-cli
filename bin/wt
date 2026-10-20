@@ -155,9 +155,9 @@ table_widths() {
   W_DIRTY=1   # "*"
   W_COMMIT=6  # "COMMIT"
   for i in "${!WT_NAMES[@]}"; do
-    (( ${#WT_NAMES[$i]} > W_BRANCH )) && W_BRANCH=${#WT_NAMES[$i]}
-    (( ${#WT_RELS[$i]} > W_PATH )) && W_PATH=${#WT_RELS[$i]}
-    (( ${#WT_SUBJ[$i]} > W_COMMIT )) && W_COMMIT=${#WT_SUBJ[$i]}
+    if (( ${#WT_NAMES[$i]} > W_BRANCH )); then W_BRANCH=${#WT_NAMES[$i]}; fi
+    if (( ${#WT_RELS[$i]} > W_PATH )); then W_PATH=${#WT_RELS[$i]}; fi
+    if (( ${#WT_SUBJ[$i]} > W_COMMIT )); then W_COMMIT=${#WT_SUBJ[$i]}; fi
   done
 }
 
