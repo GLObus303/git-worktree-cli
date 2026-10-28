@@ -84,11 +84,8 @@ create_worktree() {
 
   _create_copy_if_exists "$ROOT" "$DEST" .cursor
   _create_copy_if_exists "$ROOT" "$DEST" backend/.env
-  _create_copy_if_exists "$ROOT" "$DEST" .cursor
   _create_copy_if_exists "$ROOT" "$DEST" backend/.env.local
-  _create_copy_if_exists "$ROOT" "$DEST" .cursor
   _create_copy_if_exists "$ROOT" "$DEST" backend/.env.remote.local
-  _create_copy_if_exists "$ROOT" "$DEST" .cursor
   _create_copy_if_exists "$ROOT" "$DEST" backend/.env.test
   _create_copy_if_exists "$ROOT" "$DEST" frontend/.env
   _create_copy_if_exists "$ROOT" "$DEST" frontend/.env.local
